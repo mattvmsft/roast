@@ -151,6 +151,8 @@ type reviewFlags struct {
 	langs           []string
 	scope           string
 	authorModel     string
+	copilot         bool
+	model           string
 	finder          roleFlags
 	verifier        roleFlags
 }
@@ -374,6 +376,8 @@ func addReviewFlags(cmd *cobra.Command, f *reviewFlags) {
 	fl.StringSliceVar(&f.langs, "lang", nil, "language prompt packs (default: auto; use none to disable)")
 	fl.StringVar(&f.scope, "scope", "diff", "review scope: diff|repo (repo performs prioritized survey triage)")
 	fl.StringVar(&f.authorModel, "author-model", "", "author model or family; use roles.finder.author_routes to select an independent profile")
+	fl.BoolVar(&f.copilot, "copilot", false, "use authenticated Copilot CLI for both roles (no API keys)")
+	fl.StringVar(&f.model, "model", "", "model for both roles; role-specific model flags take precedence")
 	addRoleFlags(fl, "finder", &f.finder)
 	addRoleFlags(fl, "verifier", &f.verifier)
 }
@@ -396,12 +400,13 @@ func addRoleFlags(fl interface {
 }, name string, role *roleFlags) {
 	fl.StringVar(&role.baseURL, name+"-base-url", "", name+" inference API base URL")
 	fl.StringVar(&role.model, name+"-model", "", name+" model name")
-	fl.StringVar(&role.protocol, name+"-protocol", "", name+" protocol: chat|responses|anthropic")
+	fl.StringVar(&role.protocol, name+"-protocol", "", name+" protocol: chat|responses|anthropic|copilot")
 	fl.IntVar(&role.maxOutputTokens, name+"-max-output-tokens", 0, name+" output-token ceiling")
 }
 
 func runReview(cmd *cobra.Command, f *reviewFlags, stdout, stderr io.Writer) error {
-	resolved := func() bool { return rolesResolve(cmd.Flags().Changed, f.finder, f.verifier) }
+	applySharedFlags(cmd.Flags().Changed, f)
+	resolved := func() bool { return rolesResolve(sharedRoleChanged(cmd.Flags().Changed, f), f.finder, f.verifier) }
 	if err := maybeProvision(cmd, f.configPath, stderr, resolved); err != nil {
 		return err
 	}
@@ -409,6 +414,7 @@ func runReview(cmd *cobra.Command, f *reviewFlags, stdout, stderr io.Writer) err
 }
 
 func runReviewCommand(ctx context.Context, changed func(string) bool, f *reviewFlags, stdout, stderr io.Writer) error {
+	applySharedFlags(changed, f)
 	if f.staged && f.uncommittedOnly {
 		return &usageError{msg: "--staged and --uncommitted-only cannot be combined"}
 	}
@@ -472,8 +478,9 @@ func runReviewCommand(ctx context.Context, changed func(string) bool, f *reviewF
 	if err != nil {
 		return &usageError{msg: err.Error()}
 	}
-	finderRole = applyRoleFlags(changed, "finder", finderRole, f.finder)
-	verifierRole = applyRoleFlags(changed, "verifier", verifierRole, f.verifier)
+	roleChanged := sharedRoleChanged(changed, f)
+	finderRole = applyRoleFlags(cfg, roleChanged, "finder", finderRole, f.finder)
+	verifierRole = applyRoleFlags(cfg, roleChanged, "verifier", verifierRole, f.verifier)
 	authorModel := f.authorModel
 	if !changed("author-model") {
 		authorModel = config.AuthorModel()
@@ -488,7 +495,7 @@ func runReviewCommand(ctx context.Context, changed func(string) bool, f *reviewF
 	if flip.Warn != "" {
 		logf(stderr, "%s", flip.Warn)
 	}
-	finderRole = flip.Role
+	finderRole = applyRoleFlags(cfg, roleChanged, "finder", flip.Role, f.finder)
 	if err := config.ValidateRole("finder", finderRole); err != nil {
 		return &usageError{msg: err.Error()}
 	}
@@ -753,7 +760,7 @@ func runReviewCommand(ctx context.Context, changed func(string) bool, f *reviewF
 	if err != nil {
 		return err
 	}
-	logf(stderr, "finder=%s profile=%s protocol=%s endpoint=%s", finderRole.Model, finderRole.Profile, finderRole.Protocol, finderRole.BaseURL)
+	logf(stderr, "finder=%s profile=%s protocol=%s endpoint=%s", finder.Name(), finderRole.Profile, finderRole.Protocol, finderRole.BaseURL)
 
 	result, err := review.Find(ctx, finder, review.FindInput{
 		System: system, User: user,
@@ -777,7 +784,7 @@ func runReviewCommand(ctx context.Context, changed func(string) bool, f *reviewF
 		if newErr != nil {
 			return newErr
 		}
-		logf(stderr, "verifying %d finding(s) with %s (profile=%s protocol=%s)", len(result.Findings), verifierRole.Model, verifierRole.Profile, verifierRole.Protocol)
+		logf(stderr, "verifying %d finding(s) with %s (profile=%s protocol=%s)", len(result.Findings), verifier.Name(), verifierRole.Profile, verifierRole.Protocol)
 		result = verify.Verify(ctx, verifier, result, verify.Deps{
 			SystemPrompt: verifierSystem,
 			UserPrompt: func(finding review.Finding) string {
@@ -1012,7 +1019,7 @@ func parseNonNegativeDuration(name, raw string) (time.Duration, error) {
 // applyRoleFlags applies command-line role overrides. Endpoint and protocol
 // flags follow the same rules as their ROAST_<ROLE>_* variables, including
 // which credential may follow the role to its new endpoint.
-func applyRoleFlags(changed func(string) bool, name string, role config.ResolvedRole, flags roleFlags) config.ResolvedRole {
+func applyRoleFlags(cfg config.Config, changed func(string) bool, name string, role config.ResolvedRole, flags roleFlags) config.ResolvedRole {
 	var baseURL, protocol *string
 	if changed(name + "-base-url") {
 		baseURL = &flags.baseURL
@@ -1021,7 +1028,7 @@ func applyRoleFlags(changed func(string) bool, name string, role config.Resolved
 		protocol = &flags.protocol
 	}
 	if baseURL != nil || protocol != nil {
-		role = config.OverrideEndpoint(name, role, baseURL, protocol)
+		role = cfg.OverrideEndpoint(name, role, baseURL, protocol)
 	}
 	if changed(name + "-model") {
 		role.Model = flags.model
@@ -1030,6 +1037,25 @@ func applyRoleFlags(changed func(string) bool, name string, role config.Resolved
 		role.MaxOutputTokens = flags.maxOutputTokens
 	}
 	return role
+}
+
+func applySharedFlags(changed func(string) bool, f *reviewFlags) {
+	for name, role := range map[string]*roleFlags{"finder": &f.finder, "verifier": &f.verifier} {
+		if f.copilot && !changed(name+"-protocol") {
+			role.protocol = "copilot"
+		}
+		if changed("model") && !changed(name+"-model") {
+			role.model = f.model
+		}
+	}
+}
+
+func sharedRoleChanged(changed func(string) bool, f *reviewFlags) func(string) bool {
+	return func(name string) bool {
+		return changed(name) ||
+			(f.copilot && (name == "finder-protocol" || name == "verifier-protocol")) ||
+			(changed("model") && (name == "finder-model" || name == "verifier-model"))
+	}
 }
 
 func clientConfig(roleName string, role config.ResolvedRole, ledger *llm.Ledger, capture func(llm.RawResponse) error, maxAttempts int, requestTimeout time.Duration) llm.ClientConfig {

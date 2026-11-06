@@ -114,7 +114,7 @@ func doctorChecks(ctx context.Context, configPath string) []doctorResult {
 			role = flip.Role
 		}
 		credential := doctorResult{name + "-credential", doctorPass, role.Credential.String()}
-		if strings.TrimSpace(role.APIKey) == "" {
+		if strings.TrimSpace(role.APIKey) == "" && role.Protocol != "copilot" {
 			credential.Status = doctorFail
 		}
 		results = append(results, credential)
@@ -126,7 +126,9 @@ func doctorChecks(ctx context.Context, configPath string) []doctorResult {
 			Name: name + "-profile", Status: doctorPass,
 			Detail: fmt.Sprintf("%s: %s via %s at %s with credential %s", role.Profile, role.Model, role.Protocol, role.BaseURL, role.Credential),
 		})
-		results = append(results, doctorEndpointCheck(ctx, client, name, role))
+		if role.Protocol != "copilot" {
+			results = append(results, doctorEndpointCheck(ctx, client, name, role))
+		}
 		results = append(results, doctorRoundtripCheck(ctx, name, role))
 	}
 
@@ -145,12 +147,16 @@ func doctorRoundtripCheck(ctx context.Context, name string, role config.Resolved
 	if maxOutputTokens <= 0 || maxOutputTokens > 512 {
 		maxOutputTokens = 512
 	}
-	probeContext, cancel := context.WithTimeout(ctx, 20*time.Second)
+	probeTimeout, requestTimeout := 20*time.Second, 15*time.Second
+	if role.Protocol == "copilot" {
+		probeTimeout, requestTimeout = 120*time.Second, 90*time.Second
+	}
+	probeContext, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 	client, err := llm.New(probeContext, llm.ClientConfig{
 		Role: name, BaseURL: role.BaseURL, APIKey: role.APIKey, Model: role.Model,
 		Protocol: role.Protocol, MaxOutputTokens: maxOutputTokens,
-		MaxAttempts: 1, RequestTimeout: 15 * time.Second,
+		MaxAttempts: 1, RequestTimeout: requestTimeout,
 	})
 	if err != nil {
 		return doctorResult{name + "-roundtrip", doctorFail, err.Error()}
@@ -174,12 +180,12 @@ func doctorRoundtripCheck(ctx context.Context, name string, role config.Resolved
 		if errors.Is(err, llm.ErrAuth) {
 			return doctorResult{name + "-roundtrip", doctorFail, "credential rejected by the configured inference route"}
 		}
-		return doctorResult{name + "-roundtrip", doctorFail, fmt.Sprintf("%s/%s tool-submission probe failed: %v", role.Protocol, role.Model, err)}
+		return doctorResult{name + "-roundtrip", doctorFail, fmt.Sprintf("%s/%s tool-submission probe failed: %v", role.Protocol, client.Name(), err)}
 	}
 	if !output.OK {
 		return doctorResult{name + "-roundtrip", doctorFail, "doctor_probe returned ok=false"}
 	}
-	return doctorResult{name + "-roundtrip", doctorPass, fmt.Sprintf("%s via %s", role.Model, role.Protocol)}
+	return doctorResult{name + "-roundtrip", doctorPass, fmt.Sprintf("%s via %s", client.Name(), role.Protocol)}
 }
 
 func doctorBuildCheck() doctorResult {

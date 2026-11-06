@@ -110,6 +110,46 @@ withheld.
 
 ## Network disclosure
 
+The opt-in `copilot` protocol delegates inference to an installed GitHub
+Copilot CLI using its existing authentication and provider configuration.
+It does not pass Roast's resolved API key or endpoint in arguments or prompts;
+the CLI inherits the user's environment for its own authentication and defaults. Unlike
+the API adapters, Copilot owns its authentication, model defaults, retention,
+and session storage; the desktop app's model settings are not consulted.
+User-configured Copilot custom providers may still apply: check the CLI's
+configuration before reviewing sensitive code.
+
+Each turn is piped to a fresh CLI process in an empty temporary directory
+outside the checkout. `--no-custom-instructions` disables instruction loading,
+`--disable-builtin-mcps` disables the built-in MCP servers, and
+`--available-tools=__roast_inference_only__` selects only an unregistered
+tool name, producing an empty native tool set. The adapter grants no blanket
+tool permissions. Empty `--available-tools=` and wildcard exclusion were
+not sufficient on the tested CLI; the nonempty allowlist was verified at the
+model boundary to expose zero native tools.
+The CLI receives Roast's prompt and tool schemas; it returns a JSON
+tool envelope that Roast dispatches through its own bounded read-only tools.
+Roast does not trust the reviewed checkout's Copilot configuration.
+Configured user MCP servers may still initialize, but their tools are not
+available to the model. Operators must trust the installed CLI and their own
+CLI configuration.
+
+Cancellation terminates the direct CLI process, not its descendants. Inference
+and executable-version probes wait at most one additional second for inherited
+output pipes after cancellation or CLI exit; a pipe-drain timeout fails explicitly.
+
+Roast extracts the lossless final assistant message from JSONL events instead
+of parsing line-wrapped human-readable output. Unexpected native tool requests,
+session errors, missing completions, and malformed event JSON fail explicitly.
+Copilot usage is estimated from the bytes of Roast's prompt and the returned
+envelope, not the CLI's internal context or accounting events. The output-token
+setting is a prompt target, not a hard provider cap, and the token ledger
+is not a Copilot billing limit. Response capture normally stores the returned
+tool envelope. If execution or CLI event parsing fails, it instead stores any
+nonempty bounded raw stdout as plain text for diagnosis; this may include CLI
+session and accounting events.
+The Copilot CLI may separately persist sessions under its own settings.
+
 A review sends its prompt, selected diff or repository manifest, file content,
 tool schemas, and local tool results to the configured finder endpoint. Candidate
 findings and the code needed to adjudicate them are sent to the configured

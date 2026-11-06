@@ -321,6 +321,7 @@ func (m *managedModel) rewriteResponse(resp *fantasy.Response) *fantasy.Response
 	}
 
 	var finalCall *fantasy.ToolCallContent
+	var envelopeFeedback string
 	hasToolCall := false
 	content := append(fantasy.ResponseContent(nil), resp.Content...)
 	for i, item := range content {
@@ -332,6 +333,9 @@ func (m *managedModel) rewriteResponse(resp *fantasy.Response) *fantasy.Response
 			continue
 		}
 		hasToolCall = true
+		if m.client.cfg.Protocol == "copilot" && call.ToolName == nudgeToolName {
+			envelopeFeedback, _ = decodeArgs(call.Input)["message"].(string)
+		}
 		if call.ToolName == m.state.opts.FinalTool {
 			finalCall = &call
 			continue
@@ -374,9 +378,15 @@ func (m *managedModel) rewriteResponse(resp *fantasy.Response) *fantasy.Response
 		resp.Content = nil
 		resp.FinishReason = fantasy.FinishReasonStop
 		if m.canRetrySubmission() {
+			message := "Exploration is finished. Return the result via the `" + m.state.opts.FinalTool + "` tool call, not prose or another tool."
+			if envelopeFeedback != "" {
+				message += " " + envelopeFeedback
+			}
 			resp.Content = fantasy.ResponseContent{nudgeCall(fmt.Sprintf("roast-final-%d", m.state.submissionAttempts),
-				"Exploration is finished. Return the result via the `"+m.state.opts.FinalTool+"` tool call, not prose or another tool.")}
+				message)}
 			resp.FinishReason = fantasy.FinishReasonToolCalls
+		} else if envelopeFeedback != "" {
+			m.state.finalErr = errors.New(envelopeFeedback)
 		}
 		return resp
 	}

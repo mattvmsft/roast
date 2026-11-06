@@ -65,6 +65,13 @@ func New(ctx context.Context, cfg ClientConfig) (Client, error) {
 	if cfg.MaxOutputTokens <= 0 {
 		return nil, fmt.Errorf("%s: max output tokens must be positive", cfg.Model)
 	}
+	if cfg.Protocol == "copilot" {
+		model, err := newCopilotModel(ctx, cfg)
+		if err != nil {
+			return nil, err
+		}
+		return &client{cfg: cfg, model: model}, nil
+	}
 	if strings.TrimSpace(cfg.APIKey) == "" {
 		// Fantasy omits an empty key, and the SDKs then fall back to ambient
 		// credentials: environment variables, profile files, or federation.
@@ -120,7 +127,12 @@ func New(ctx context.Context, cfg ClientConfig) (Client, error) {
 
 func userAgent() string { return "roast/" + buildinfo.Version }
 
-func (c *client) Name() string { return c.cfg.Model }
+func (c *client) Name() string {
+	if c.cfg.Protocol == "copilot" && c.cfg.Model == "" {
+		return "copilot (default)"
+	}
+	return c.cfg.Model
+}
 
 func (c *client) Usage() Usage {
 	c.mu.Lock()

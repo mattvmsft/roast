@@ -1,6 +1,6 @@
 ---
 name: roast
-description: Adversarial cross-model review in which a finder proposes defects and an independent verifier checks each claim against the code. Use after a coherent, non-trivial code or prose change, before declaring the work complete, or when the operator asks for a Roast review.
+description: Run an adversarial Roast review after non-trivial code or prose changes, before declaring work complete, or when the operator requests /roast.
 ---
 
 # Roast
@@ -23,8 +23,16 @@ the profile example in the Configure section of the Roast README
 (https://github.com/bluesky-social/roast#configure). Use
 `roast config init --from <url>` only with a trusted configuration URL that the
 operator supplies. A profile selects an endpoint, model, wire protocol
-(`responses`, `chat`, or `anthropic`), credential environment variable, and
-output limit. The finder and verifier may use different profiles and protocols.
+(`responses`, `chat`, `anthropic`, or `copilot`), and output limit. API profiles
+also select a credential source. The finder and verifier may use different
+profiles and protocols.
+
+The `copilot` protocol uses the authenticated GitHub Copilot CLI without
+provider API keys. An omitted model uses Copilot CLI's defaults; it does not
+read the desktop app's model selection. Use `--copilot` to select this provider
+for both roles, `--model <name>` for both models, or `--finder-model <name>` and
+`--verifier-model <name>` independently. Do not request API keys when Copilot
+is selected. No launcher script is needed.
 
 `roast skill install` installs this skill into the shared Agent Skills location
 and any detected Claude Code or Polytoken installation. `roast skill status`
@@ -43,8 +51,17 @@ use `--base <ref>` when the work is already committed.
 
 ## Invocations
 
+Run the `roast` binary on PATH from the repository being reviewed. Start with
+`roast review --task "what changed and why"` and respect the user's configured
+providers and model defaults. Keep finder/verifier verification enabled unless
+the operator explicitly requests a draft or quick review. Pass `--author-model`
+when the author's model is known; do not guess it. Do not install a Git gate or
+enable uploads unless the operator asks for them.
+
 ```sh
 roast review --task "what changed and why"
+roast review --copilot --task "what changed and why"
+roast review --copilot --finder-model <model> --verifier-model <model> --task "what changed and why"
 roast review --staged --task "what changed and why"
 roast review --quick --task "draft review"
 roast review --interactive --task "review with repository navigation"

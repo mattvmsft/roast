@@ -299,7 +299,7 @@ func TestProtocolFlagMovesAnUnmodifiedDefaultEndpoint(t *testing.T) {
 		t.Fatalf("API key = %q", role.APIKey)
 	}
 	changed := func(name string) bool { return name == "finder-protocol" }
-	got := applyRoleFlags(changed, "finder", role, roleFlags{protocol: "anthropic"})
+	got := applyRoleFlags(config.Config{}, changed, "finder", role, roleFlags{protocol: "anthropic"})
 	if got.BaseURL != config.DefaultBaseURL("anthropic") {
 		t.Fatalf("base URL = %q", got.BaseURL)
 	}
@@ -308,7 +308,7 @@ func TestProtocolFlagMovesAnUnmodifiedDefaultEndpoint(t *testing.T) {
 	}
 
 	role = resolveFinder(t, "version: 1\ninference_profiles:\n  finder:\n    model: m\n    endpoint: https://gateway.example/v1\n    api_key_env: GATEWAY_KEY\n")
-	got = applyRoleFlags(changed, "finder", role, roleFlags{protocol: "anthropic"})
+	got = applyRoleFlags(config.Config{}, changed, "finder", role, roleFlags{protocol: "anthropic"})
 	if got.BaseURL != role.BaseURL || got.APIKey != "gateway-key" {
 		t.Fatalf("custom role changed to %#v", got)
 	}
@@ -323,7 +323,7 @@ func TestProtocolFlagClearsWrongProviderCredential(t *testing.T) {
 	} {
 		role := resolveFinder(t, document)
 		changed := func(name string) bool { return name == "finder-protocol" }
-		got := applyRoleFlags(changed, "finder", role, roleFlags{protocol: "anthropic"})
+		got := applyRoleFlags(config.Config{}, changed, "finder", role, roleFlags{protocol: "anthropic"})
 		if got.APIKey != "" {
 			t.Fatalf("stale credential retained: %q from %v", got.APIKey, got.Credential)
 		}
@@ -341,7 +341,7 @@ func TestProtocolFlagMatchesEnvironmentForUnsetEndpoint(t *testing.T) {
 	fromEnv := resolveFinder(t, document)
 	t.Setenv("ROAST_FINDER_PROTOCOL", "")
 	changed := func(name string) bool { return name == "finder-protocol" }
-	fromFlag := applyRoleFlags(changed, "finder", resolveFinder(t, document), roleFlags{protocol: "anthropic"})
+	fromFlag := applyRoleFlags(config.Config{}, changed, "finder", resolveFinder(t, document), roleFlags{protocol: "anthropic"})
 
 	for path, role := range map[string]config.ResolvedRole{"ROAST_FINDER_PROTOCOL": fromEnv, "--finder-protocol": fromFlag} {
 		if role.BaseURL != gateway || role.Protocol != "anthropic" || role.APIKey != "gateway-key" || role.Credential.Env != "ANTHROPIC_API_KEY" {
@@ -357,7 +357,7 @@ func TestBaseURLFlagDoesNotCarryAmbientProviderKey(t *testing.T) {
 	changed := func(name string) bool { return name == "finder-base-url" }
 	flags := roleFlags{baseURL: "https://elsewhere.example/v1"}
 
-	ambient := applyRoleFlags(changed, "finder", resolveFinder(t, "version: 1\ninference_profiles:\n  finder:\n    model: m\n"), flags)
+	ambient := applyRoleFlags(config.Config{}, changed, "finder", resolveFinder(t, "version: 1\ninference_profiles:\n  finder:\n    model: m\n"), flags)
 	if ambient.APIKey != "" || ambient.Credential.Withheld != "OPENAI_API_KEY" {
 		t.Fatalf("ambient key followed --finder-base-url: key=%q source=%v", ambient.APIKey, ambient.Credential)
 	}
@@ -365,19 +365,19 @@ func TestBaseURLFlagDoesNotCarryAmbientProviderKey(t *testing.T) {
 		t.Fatalf("missing-credential error does not explain the withheld key: %v", err)
 	}
 
-	profile := applyRoleFlags(changed, "finder", resolveFinder(t, "version: 1\ninference_profiles:\n  finder:\n    model: m\n    api_key_env: PROFILE_KEY\n"), flags)
+	profile := applyRoleFlags(config.Config{}, changed, "finder", resolveFinder(t, "version: 1\ninference_profiles:\n  finder:\n    model: m\n    api_key_env: PROFILE_KEY\n"), flags)
 	if profile.APIKey != "profile-key" || profile.BaseURL != flags.baseURL {
 		t.Fatalf("explicit profile credential did not follow the explicit flag: %#v", profile)
 	}
 
 	t.Setenv("ROAST_FINDER_API_KEY", "role-key")
-	role := applyRoleFlags(changed, "finder", resolveFinder(t, "version: 1\ninference_profiles:\n  finder:\n    model: m\n"), flags)
+	role := applyRoleFlags(config.Config{}, changed, "finder", resolveFinder(t, "version: 1\ninference_profiles:\n  finder:\n    model: m\n"), flags)
 	if role.APIKey != "role-key" || role.Credential.Kind != config.CredentialRoleEnv {
 		t.Fatalf("role-scoped key not used: %#v", role)
 	}
 
 	t.Setenv("ROAST_FINDER_API_KEY", "")
-	back := applyRoleFlags(changed, "finder", resolveFinder(t, "version: 1\ninference_profiles:\n  finder:\n    model: m\n    endpoint: https://custom.example/v1\n"), roleFlags{baseURL: config.DefaultBaseURL("responses")})
+	back := applyRoleFlags(config.Config{}, changed, "finder", resolveFinder(t, "version: 1\ninference_profiles:\n  finder:\n    model: m\n    endpoint: https://custom.example/v1\n"), roleFlags{baseURL: config.DefaultBaseURL("responses")})
 	if back.APIKey != "openai-key" {
 		t.Fatalf("ambient key not used at the provider default endpoint: %#v", back)
 	}

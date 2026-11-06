@@ -27,6 +27,9 @@ const (
 
 // DefaultBaseURL returns the public default endpoint for a wire protocol.
 func DefaultBaseURL(protocol string) string {
+	if protocol == "copilot" {
+		return ""
+	}
 	if protocol == "anthropic" {
 		return defaultAnthropicBaseURL
 	}
@@ -81,6 +84,7 @@ const (
 	CredentialProfileKey  = "profile_api_key"
 	CredentialProviderEnv = "provider_env"
 	CredentialNone        = "none"
+	CredentialCopilot     = "copilot"
 )
 
 // CredentialSource describes where a role's credential came from without
@@ -96,6 +100,8 @@ type CredentialSource struct {
 
 func (s CredentialSource) String() string {
 	switch s.Kind {
+	case CredentialCopilot:
+		return "Copilot CLI authentication"
 	case CredentialRoleEnv:
 		return s.Env + " (role override)"
 	case CredentialProfileEnv:
@@ -524,6 +530,9 @@ func (p InferenceProfile) Endpoint() string {
 // DescribeEndpoint states where the profile sends requests, including the
 // ambient base URL that replaces an unset endpoint.
 func (p InferenceProfile) DescribeEndpoint() string {
+	if p.Protocol == "copilot" {
+		return "local Copilot CLI"
+	}
 	if p.BaseURL != "" {
 		return p.BaseURL
 	}
@@ -533,6 +542,9 @@ func (p InferenceProfile) DescribeEndpoint() string {
 // DescribeCredential states, without resolving any secret, where the profile
 // obtains its credential when selected for role.
 func (p InferenceProfile) DescribeCredential(role string) string {
+	if p.Protocol == "copilot" {
+		return "Copilot CLI authentication"
+	}
 	roleVar := roleEnvPrefix(role) + "API_KEY"
 	keyVar := providerAPIKeyEnv(p.Protocol)
 	switch {
@@ -616,6 +628,9 @@ func applyRoleEnv(name string, role *ResolvedRole) (bool, error) {
 // resolveCredential selects the role's credential. A profile credential does
 // not follow a protocol override onto another provider's default endpoint.
 func resolveCredential(roleName string, profile InferenceProfile, role ResolvedRole, crossedProvider bool) (string, CredentialSource) {
+	if role.Protocol == "copilot" {
+		return "", CredentialSource{Kind: CredentialCopilot}
+	}
 	roleVar := roleEnvPrefix(roleName) + "API_KEY"
 	if value := os.Getenv(roleVar); value != "" {
 		return value, CredentialSource{Kind: CredentialRoleEnv, Env: roleVar}
@@ -652,6 +667,9 @@ func ambientCredential(protocol, endpoint string) (string, CredentialSource) {
 // implicitEndpoint is the endpoint of a role that chose none: the ambient
 // provider base URL for protocol, or the protocol's public default.
 func implicitEndpoint(protocol string) string {
+	if protocol == "copilot" {
+		return ""
+	}
 	if value := os.Getenv(providerBaseURLEnv(protocol)); value != "" {
 		return value
 	}
@@ -675,7 +693,7 @@ func applyEndpointOverrides(role *ResolvedRole, baseURL, protocol *string) bool 
 			case !role.ExplicitEndpoint:
 				role.BaseURL = implicitEndpoint(*protocol)
 				crossedProvider = true
-			case sameEndpoint(role.BaseURL, previous):
+			case sameEndpoint(role.BaseURL, previous) || (role.BaseURL == "" && previous == ""):
 				role.BaseURL = next
 				crossedProvider = true
 			}
@@ -695,12 +713,41 @@ func OverrideEndpoint(roleName string, role ResolvedRole, baseURL, protocol *str
 	return rebindCredential(roleName, role, applyEndpointOverrides(&role, baseURL, protocol))
 }
 
+// OverrideEndpoint also restores profile credential resolution when an API
+// override supersedes a Copilot selection that discarded the credential.
+func (c Config) OverrideEndpoint(roleName string, role ResolvedRole, baseURL, protocol *string) ResolvedRole {
+	wasCopilot := role.Protocol == "copilot"
+	role = OverrideEndpoint(roleName, role, baseURL, protocol)
+	if wasCopilot && role.Protocol != "copilot" {
+		if profile, ok := c.InferenceProfiles[role.Profile]; ok && profile.Protocol != "copilot" {
+			prior := ResolvedRole{
+				Protocol: profile.Protocol, BaseURL: profile.BaseURL,
+				ExplicitEndpoint: profile.BaseURL != "",
+			}
+			if !prior.ExplicitEndpoint {
+				prior.BaseURL = implicitEndpoint(profile.Protocol)
+			}
+			if endpoint := os.Getenv(roleEnvPrefix(roleName) + "BASE_URL"); endpoint != "" {
+				applyEndpointOverrides(&prior, &endpoint, nil)
+			}
+			crossedProvider := applyEndpointOverrides(&prior, baseURL, protocol)
+			role.BaseURL, role.ExplicitEndpoint = prior.BaseURL, prior.ExplicitEndpoint
+			role.APIKey, role.Credential = resolveCredential(roleName, profile, role, crossedProvider)
+		}
+	}
+	return role
+}
+
 // rebindCredential re-resolves a role's credential after its endpoint or
 // protocol changed. A role-scoped key or the profile's own credential follows
 // an explicit endpoint override. An ambient provider key is checked again
 // against the new endpoint and protocol. When crossedProvider is true, the
 // profile's credential stays with the provider it was configured for.
 func rebindCredential(roleName string, role ResolvedRole, crossedProvider bool) ResolvedRole {
+	if role.Protocol == "copilot" {
+		role.APIKey, role.Credential = "", CredentialSource{Kind: CredentialCopilot}
+		return role
+	}
 	switch role.Credential.Kind {
 	case CredentialRoleEnv:
 		return role
@@ -854,6 +901,9 @@ func (c Config) ResolveFinderFlip(finder ResolvedRole, authorModel string) (Flip
 
 // ValidateRole checks one fully-resolved role before any model call.
 func ValidateRole(name string, role ResolvedRole) error {
+	if role.Protocol == "copilot" {
+		return validateEndpoint(name, role.BaseURL, role.Protocol, role.MaxOutputTokens)
+	}
 	if strings.TrimSpace(role.Model) == "" {
 		return fmt.Errorf("%s model is not configured (set inference_profiles.%s.model or ROAST_%s_MODEL)", name, role.Profile, strings.ToUpper(name))
 	}
@@ -872,6 +922,15 @@ func ValidateRole(name string, role ResolvedRole) error {
 }
 
 func validateEndpoint(name, baseURL, protocol string, maxOutputTokens int) error {
+	if protocol == "copilot" {
+		if baseURL != "" {
+			return fmt.Errorf("%s copilot protocol does not use an endpoint", name)
+		}
+		if maxOutputTokens <= 0 {
+			return fmt.Errorf("%s max_output_tokens must be positive", name)
+		}
+		return nil
+	}
 	u, err := url.Parse(baseURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return fmt.Errorf("%s endpoint must be an http(s) URL without credentials, a query, or a fragment", name)
@@ -879,7 +938,7 @@ func validateEndpoint(name, baseURL, protocol string, maxOutputTokens int) error
 	switch protocol {
 	case "chat", "responses", "anthropic":
 	default:
-		return fmt.Errorf("%s protocol must be chat, responses, or anthropic", name)
+		return fmt.Errorf("%s protocol must be chat, responses, anthropic, or copilot", name)
 	}
 	if maxOutputTokens <= 0 {
 		return fmt.Errorf("%s max_output_tokens must be positive", name)

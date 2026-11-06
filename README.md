@@ -66,6 +66,88 @@ roast review --task 'add retry handling'
 Both roles default to the OpenAI Responses protocol at
 `https://api.openai.com/v1`.
 
+### GitHub Copilot (no provider API keys)
+
+Install the current [GitHub Copilot CLI](https://github.com/github/copilot-cli)
+and authenticate with `copilot login` using an account with Copilot access.
+Roast invokes the standalone `copilot` executable using its existing
+authentication; it does not obtain or copy tokens from the desktop app.
+
+```sh
+roast review --copilot --task 'add retry handling'
+roast review --copilot --model auto
+roast review --copilot --finder-model gpt-6.1-sol
+roast review --copilot --verifier-model auto
+roast review --copilot --finder-model gpt-6.1-sol --verifier-model auto
+```
+
+`--copilot` selects the CLI for both roles. `--model` selects one model for
+both; `--finder-model` and `--verifier-model` override it independently.
+Roast passes each selected name unchanged to Copilot's `--model`; use a name
+supported by your installed CLI and subscription. An empty model omits
+`--model` entirely and uses **Copilot CLI's own defaults**, not a hard-coded
+Roast model. Existing profile/environment model selections still apply.
+With no overrides both roles may use the same default model; choose separate
+models when independent model families are important.
+
+For durable settings, or to mix Copilot with an existing API provider:
+
+```yaml
+version: 1
+inference_profiles:
+  copilot:
+    protocol: copilot
+    # Omit model to use Copilot CLI's default.
+    # model: auto
+roles:
+  finder:
+    profile: copilot
+  verifier:
+    profile: copilot
+```
+
+Alternatively set `ROAST_FINDER_PROTOCOL=copilot` and
+`ROAST_VERIFIER_PROTOCOL=copilot`; the existing `ROAST_*_MODEL` variables
+select models independently. `roast doctor --config <path>` performs a real
+Copilot tool-envelope probe without querying an API `/models` endpoint.
+Copilot profiles do not use `endpoint`, `api_key`, or `api_key_env`.
+An explicit API endpoint must be removed before switching that profile to
+Copilot.
+
+No launcher script is required: `roast review --copilot` invokes the CLI
+directly. On Windows, Roast checks `--version` on Copilot candidates in PATH
+order, skipping broken App Execution Aliases and candidates that do not
+identify themselves as GitHub Copilot CLI. It never uses an inference request
+to discover an executable or switches executables after inference fails.
+Windows discovery uses only absolute PATH entries, ignoring implicit
+current-directory executables and relative PATH entries.
+
+To select a specific installation, set `ROAST_COPILOT_COMMAND` to its absolute
+executable path (not a command with arguments). This explicit choice is used
+as-is and never replaced by another PATH candidate. On Windows,
+the WinGet installation typically places the CLI under
+`%LocalAppData%\Microsoft\WinGet\Packages\GitHub.Copilot_...\copilot.exe`.
+
+The adapter requires piped-input prompt mode, `--silent`, `--stream off`,
+`--output-format json`, `--available-tools`, `--no-custom-instructions`,
+`--no-ask-user`, and `--disable-builtin-mcps`. Each model turn runs in a fresh
+empty working directory with an allowlist containing only the unregistered
+`__roast_inference_only__` tool name, so no native tools are available. An
+empty allowlist flag is not sufficient on the supported CLI.
+Roast reads the unwrapped `assistant.message` from JSONL events; human-readable
+CLI text output may wrap lines inside JSON strings and must not be parsed.
+Roast handles the returned JSON tool envelope through its bounded read-only tools,
+structured-output retries with validation feedback, deadlines, and response
+recording (including malformed CLI text for diagnosis).
+`max_output_tokens` is a prompt target and ledger reservation, **not a
+CLI-enforced token cap**. Copilot token counts in run records are conservative
+byte-based estimates, not billing statistics; CLI calls can consume Copilot
+credits and CLI session storage is governed by Copilot's settings.
+
+You can invoke Roast from a Copilot desktop-app terminal or agent shell, but
+there is no direct desktop-app provider integration here. Desktop-app model
+defaults/session selections are not read or forwarded automatically.
+
 ## Configure
 
 ### Environment variables
@@ -84,7 +166,7 @@ export ROAST_VERIFIER_MODEL='verifier-model'
 export ROAST_VERIFIER_PROTOCOL='responses'
 ```
 
-Protocols are `chat`, `responses`, and `anthropic` (native Messages, which
+API protocols are `chat`, `responses`, and `anthropic` (native Messages, which
 authenticates with `x-api-key` and defaults to `https://api.anthropic.com/v1`):
 
 ```sh
@@ -139,7 +221,11 @@ unsupported versions.
 ### Credentials and precedence
 
 Command-line role flags override `ROAST_FINDER_*` / `ROAST_VERIFIER_*`
-variables, which override profiles. A role's credential is the first of:
+variables, which override profiles. Command-line overrides are reapplied after
+author routing selects a finder profile, so routing cannot discard `--copilot`,
+shared/per-role model selections, or explicit endpoint/output-token flags.
+An incompatible explicit endpoint on a routed profile fails validation rather
+than sending an API request when Copilot was selected. A role's credential is the first of:
 
 1. `ROAST_FINDER_API_KEY` or `ROAST_VERIFIER_API_KEY`;
 2. the profile's `api_key_env` or `api_key`;

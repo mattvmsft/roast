@@ -258,7 +258,7 @@ func rolesResolve(changed func(string) bool, finder, verifier roleFlags) bool {
 		if err != nil {
 			return false
 		}
-		if config.ValidateRole(name, applyRoleFlags(changed, name, role, flags)) != nil {
+		if config.ValidateRole(name, applyRoleFlags(cfg, changed, name, role, flags)) != nil {
 			return false
 		}
 	}

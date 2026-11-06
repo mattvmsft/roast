@@ -24,8 +24,8 @@ func NewResponseRecorder(runID string) *ResponseRecorder {
 	return &ResponseRecorder{runID: runID}
 }
 
-// Append durably appends a native provider body. JSON stays JSON; raw SSE is
-// stored losslessly as a JSON string, identified by its content_type.
+// Append durably appends a native provider body. JSON stays JSON; raw SSE and
+// CLI text are stored losslessly as JSON strings with their content_type.
 func (r *ResponseRecorder) Append(role, protocol, model, contentType string, body []byte) error {
 	if r == nil || r.runID == "" || filepath.Base(r.runID) != r.runID || r.runID == "." {
 		return fmt.Errorf("record provider response: invalid run id")
@@ -36,9 +36,9 @@ func (r *ResponseRecorder) Append(role, protocol, model, contentType string, bod
 		if !json.Valid(body) {
 			return fmt.Errorf("record provider response: body is not valid JSON")
 		}
-	case "text/event-stream":
+	case "text/event-stream", "text/plain":
 		if !utf8.Valid(body) {
-			return fmt.Errorf("record provider response: event stream is not valid UTF-8")
+			return fmt.Errorf("record provider response: text body is not valid UTF-8")
 		}
 		encodedBody, _ = json.Marshal(string(body))
 	default:
