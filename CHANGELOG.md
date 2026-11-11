@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.4.6 (2026-11-11)
+
+## What's Changed
+* ci: exclude docs and .github from releases by @sarahmaeve in https://github.com/bluesky-social/roast/pull/146
+
+## New Contributors
+* @sarahmaeve made their first contribution in https://github.com/bluesky-social/roast/pull/146
+
+**Full Changelog**: https://github.com/bluesky-social/roast/compare/v1.4.5...v1.4.6
+
 ## 1.4.5 (2026-11-09)
 
 ## What's Changed
